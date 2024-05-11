@@ -1,0 +1,12 @@
+# General
+__pycache__/
+*.py[cod]
+
+# Databases
+data/*.db
+
+# Assistant file
+data/assistant.json
+
+# Environment variables
+.env
