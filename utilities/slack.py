@@ -2,20 +2,39 @@ import os
 import logging
 import requests
 import shutil
+from dotenv import load_dotenv
 import pandas as pd
 from slack_sdk import WebClient
 from slack_sdk.errors import SlackApiError
+from googleapiclient.discovery import build
+from google.oauth2 import service_account
+from openai import OpenAI
 
-# Mapping the categories
-categories = {
-    1: "Bounces",
-    2: "Open rates complaints",
-    3: "Email account block",
-    4: "Questions about tracking",
-    5: "DNS",
-    6: "Other questions",
-    7: "Email Validations issues"
-}
+load_dotenv()
+
+client = OpenAI(
+  api_key=os.environ.get("OPENAI_API_KEY"),
+)
+
+service_account_file = 'data/hr-test-project-422816-8532d5dd2659.json'
+
+def translate_text_with_llm(text):
+    response = client.chat.completions.create(
+    model="gpt-3.5-turbo",
+    messages=[
+        {"role": "system", "content": "You are a helpful assistant."},
+        {"role": "user", "content": "Who won the world series in 2020?"},
+        {"role": "assistant", "content": "The Los Angeles Dodgers won the World Series in 2020."},
+        {"role": "user", "content": "Where was it played?"}
+    ]
+    )
+
+def contains_russian_or_english(text):
+    try:
+        language = detect(text)
+        return language in ["ru", "en"]
+    except:
+        return False
 
 def upload_file(channel_id, file_path):
     client = WebClient(token=os.environ.get("SLACK_BOT_TOKEN"))
@@ -47,125 +66,208 @@ def clear_directory(directory_path):
         except Exception as e:
             print(f'Failed to delete {file_path}. Reason: {e}')
 
-def clean_and_split_tags(cell):
-  if pd.isnull(cell):
-      return []  # Return an empty list for NaN values
-  tags = [tag.strip() for tag in cell.replace(',', '|').split('|')]
-  dt_tags = [tag for tag in tags if 'DT' in tag]
-  return dt_tags
+def parse_and_style(text):
+    lines = text.split('\n')
+    requests = []
+    index = 1  # Google Docs starts indexing from 1
+    bullet_ranges = []
 
-def parse_tag_and_category(tag):
-  # Check if the tag contains the expected ':' separator
-  if ':' in tag:
-      tag_name, cat_id = tag.split(':')
-      cat_id = int(cat_id)  # Convert to integer
-      category_name = f"{cat_id} - {categories.get(cat_id, 'Unknown category')}"
-  else:
-      # Handle the case where no ':' is found
-      tag_name = tag  # Use the original tag as the tag name
-      cat_id = 0  # Convert to integer
-      category_name = "Unknown category"  # Assign to an unknown category
-  
-  return f"{tag_name}", category_name,
+    for line in lines:
+        if line.startswith('# '):
+            content = line[2:].strip() + '\n'
+            end_index = index + len(content)
+            requests.append({
+                'insertText': {
+                    'location': {'index': index},
+                    'text': content
+                }
+            })
+            requests.append({
+                'updateParagraphStyle': {
+                    'range': {'startIndex': index, 'endIndex': end_index},
+                    'paragraphStyle': {
+                        'alignment': 'CENTER',
+                        'namedStyleType': 'HEADING_1'
+                    },
+                    'fields': 'namedStyleType,alignment'
+                }
+            })
+            index = end_index
 
-def process_and_send_file(file_path, files_data):
-    channel_id = files_data["channel_id"]
+        elif line.startswith('## '):
+            content = line[3:].strip() + '\n'
+            end_index = index + len(content)
+            requests.append({
+                'insertText': {
+                    'location': {'index': index},
+                    'text': content
+                }
+            })
+            requests.append({
+                'updateParagraphStyle': {
+                    'range': {'startIndex': index, 'endIndex': end_index},
+                    'paragraphStyle': {'namedStyleType': 'HEADING_3'},
+                    'fields': 'namedStyleType'
+                }
+            })
+            index = end_index
+
+        elif line.startswith('- '):
+            content = line[2:].strip() + '\n'
+            end_index = index + len(content)
+            requests.append({
+                'insertText': {
+                    'location': {'index': index},
+                    'text': content
+                }
+            })
+            # Record the range for bullet styling
+            bullet_ranges.append((index, end_index))
+            index = end_index
+
+    # Apply bullet points to recorded ranges
+    for start, end in bullet_ranges:
+        requests.append({
+            'createParagraphBullets': {
+                'range': {'startIndex': start, 'endIndex': end},
+                'bulletPreset': 'BULLET_DISC_CIRCLE_SQUARE'
+            }
+        })
+
+    return requests
+
+def create_google_doc(processed_data, service_account_file, is_anonymous=False):
+    # Load the service account credentials
+    creds = service_account.Credentials.from_service_account_file(
+        service_account_file, scopes=['https://www.googleapis.com/auth/drive']
+    )
+
+    # Create a Drive API client
+    drive_service = build('drive', 'v3', credentials=creds)
+
+    # Create a Docs API client
+    docs_service = build('docs', 'v1', credentials=creds)
+
+    # Create a new Google Docs file
+    doc_title = 'Processed Data (Anonymous)' if is_anonymous else 'Processed Data'
+    doc_body = {
+        'name': doc_title,
+        'mimeType': 'application/vnd.google-apps.document',
+        'parents': ["1Y7EcA6z21vuNB0PGL28QlkyrWpRMEV0G"],
+    }
+    doc = drive_service.files().create(body=doc_body).execute()
+    doc_id = doc['id']
+
+    print(doc_id, "===========doc_id============")
+
+    requests = parse_and_style(processed_data)
+
+    print(requests, "=========requests============")
+    result = docs_service.documents().batchUpdate(documentId=doc_id, body={'requests': requests}).execute()
+
+    # set_permissions(drive_service, doc_id, 'iwahtelt@gmail.com')
+
+    print(f"Google Docs file created: {doc_title}")
+    print(f"File ID: {doc_id}")
+    print(f"File URL: https://docs.google.com/document/d/{doc_id}")
+
+def set_permissions(service, file_id, user_email):
+    permissions = {
+        'type': 'user',
+        'role': 'writer',
+        'emailAddress': user_email
+    }
+    service.permissions().create(
+        fileId=file_id,
+        body=permissions,
+        fields='id'
+    ).execute()
+
+def process_files(file_paths, is_anonymous=False):
+    data = ""
+    excluded_columns = ["Respondent number", "Timestamp", "Email Address", "Respondent signature"]
+    processed_columns = set()
+
+    for file_path in file_paths:
+        # Get the file name without the extension
+        file_name = os.path.splitext(os.path.basename(file_path))[0]
+        
+        # Read the CSV file using pandas
+        df = pd.read_csv(file_path)
+        
+        # Add the section marker and file name
+        data += f"# {file_name}\n\n"
+        
+        # Iterate over the columns
+        for column in df.columns:
+            if column not in excluded_columns:
+                # Check if the column is repetitive
+                base_column = column.split("[")[0].strip()
+                if base_column in processed_columns:
+                    continue
+                
+                processed_columns.add(base_column)
+                
+                # Add the paragraph marker and column name (without brackets)
+                data += f"## {base_column}\n"
+                
+                # Iterate over the rows in the current column
+                for index, value in enumerate(df[column]):
+                    if pd.isna(value):
+                        # Add an empty string for NaN values
+                        data += "\n"
+                    else:
+                        # Check if the column is repetitive
+                        if "[" in column and "]" in column:
+                            data += "- [Chart_Placeholder]\n"
+                        else:
+                            # Add the row value and respondent signature (if available and not anonymous)
+                            if not is_anonymous and "Respondent signature" in df.columns:
+                                signature = df.loc[index, "Respondent signature"]
+                                if pd.isna(signature):
+                                    data += f"- {value}\n"
+                                else:
+                                    data += f"- {value} {signature}\n"
+                            else:
+                                data += f"- {value}\n"
+                
+                data += "\n"  # Add a newline after each paragraph
+        
+        data += "\n"  # Add a newline after each section
     
-    # Read from CSV
-    df = pd.read_csv(file_path)
-    
-    # Drop the first two columns from the DataFrame
-    df = df.iloc[:, 2:]
-    
-    # Process tags
-    df['Conversation tags'] = df['Conversation tags'].apply(clean_and_split_tags)
-    exploded_df = df.explode('Conversation tags')
-    
-    # Count and categorize tags.
-    tag_counts = exploded_df['Conversation tags'].value_counts()
-    summary_df = pd.DataFrame({
-        'Unique Tag': tag_counts.index,
-        'Count': tag_counts.values
-    })
+    create_google_doc(data, service_account_file, is_anonymous)
 
-    # Assuming parse_tag_and_category function is defined elsewhere.
-    summary_df[['Formatted Tag', 'Category Name']] = summary_df['Unique Tag'].apply(parse_tag_and_category).tolist()
-    
-    # Group by 'Category Name' and aggregate tags within categories.
-    category_groups = summary_df.groupby('Category Name').apply(
-        lambda x: x[['Formatted Tag', 'Count']].to_dict('records')
-    ).reset_index()
-    category_groups.columns = ['Category Name', 'Tags']
-
-    rows = prepare_rows(category_groups)
-
-    category_df = pd.DataFrame(rows)
-    exploded_df.reset_index(drop=True, inplace=True)
-    category_df.reset_index(drop=True, inplace=True)
-    final_df = pd.concat([exploded_df, category_df], axis=1)
-
-    # Save the DataFrame to an Excel file
-    new_file_path = file_path.replace(".csv", "_processed.xlsx")
-    final_df.to_excel(new_file_path, index=False, engine='openpyxl')
-
-    # Upload the file (assuming this function is defined elsewhere)
-    upload_file(channel_id=channel_id, file_path=new_file_path)
-
-# Helper function to prepare rows as before
-def prepare_rows(category_groups):
-    # Prepare the 'Categories' and 'DT Tags' data.
-    rows = []
-    total_count = 0
-    category_summary = {}
-
-    for category in category_groups.to_dict('records'):
-        category_total = sum(tag['Count'] for tag in category["Tags"])
-        category_summary[category['Category Name']] = category_total
-        total_count += category_total
-
-        rows.append({"Category Name": category['Category Name'], "DT Tags": '', "Count": ''})
-        for tag in category["Tags"]:
-            rows.append({"Category Name": '', "DT Tags": tag['Formatted Tag'], "Count": tag['Count']})
-
-        rows.append({"Category Name": '', "DT Tags": '', "Count": ''})  # First empty row
-        rows.append({"Category Name": '', "DT Tags": '', "Count": ''})  # Second empty row
-
-    # After the last category, add final rows and summary
-    rows.append({"Category Name": '', "DT Tags": "Total:", "Count": total_count})
-    rows.append({"Category Name": '', "DT Tags": '', "Count": ''})  # First empty row
-    rows.append({"Category Name": '', "DT Tags": '', "Count": ''})  # Second empty row
-    rows.append({"Category Name": '', "DT Tags": '', "Count": ''})  # Third empty row
-    rows.append({"Category Name": "Number of chats by category", "DT Tags": '', "Count": ''})  # Header row for summary
-    
-    for category, count in category_summary.items():
-        rows.append({"Category Name": category, "DT Tags": count, "Count": ''})
-
-    return rows
-
-
-def download_file(files, files_data):
-  for file_info in files:
-    # Check the file type for security
-    logging.info(f"Received file type: {file_info['filetype']}")
-    file_url = file_info["url_private"]
-    file_name = file_info["name"]
-    
-    # Define a temporary storage path
+def download_files(files, files_data):
+    file_paths = []
     download_dir = "./temp_downloads"
     os.makedirs(download_dir, exist_ok=True)
-    local_file_path = os.path.join(download_dir, file_name)
     
-    # Download the file
-    headers = {"Authorization": f"Bearer {os.environ.get('SLACK_BOT_TOKEN')}"}
-    response = requests.get(file_url, headers=headers, stream=True)
-    
-    if response.status_code == 200:
-        with open(local_file_path, "wb") as f:
-            for chunk in response.iter_content(1024):
-                f.write(chunk)
+    for file_info in files:
+        # Check the file type for security
+        logging.info(f"Received file type: {file_info['filetype']}")
+        file_url = file_info["url_private"]
+        file_name = file_info["name"]
         
-        logging.info(f"File downloaded: {local_file_path}")
-        # Process and send the file, then delete it
-        process_and_send_file(local_file_path, files_data)
-    else:
-        logging.error(f"Failed to download file: {file_url}")
+        local_file_path = os.path.join(download_dir, file_name)
+        file_paths.append(local_file_path)
+        
+        # Download the file
+        headers = {"Authorization": f"Bearer {os.environ.get('SLACK_BOT_TOKEN')}"}
+        response = requests.get(file_url, headers=headers, stream=True)
+        
+        if response.status_code == 200:
+            with open(local_file_path, "wb") as f:
+                for chunk in response.iter_content(1024):
+                    f.write(chunk)
+            logging.info(f"File downloaded: {local_file_path}")
+        else:
+            logging.error(f"Failed to download file: {file_url}")
+    
+    # Process and send the non-anonymous version of the document
+    process_files(file_paths, is_anonymous=False)
+
+    # Process and send the anonymous version of the document
+    process_files(file_paths, is_anonymous=True)
+
+    # Delete the temporary downloaded files
+    clear_directory('./temp_downloads')

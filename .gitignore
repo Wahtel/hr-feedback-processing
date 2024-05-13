@@ -2,11 +2,8 @@
 __pycache__/
 *.py[cod]
 
-# Databases
-data/*.db
-
-# Assistant file
-data/assistant.json
+# data folder
+data/*
 
 # Environment variables
 .env
