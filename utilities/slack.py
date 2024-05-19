@@ -9,6 +9,9 @@ from slack_sdk.errors import SlackApiError
 from googleapiclient.discovery import build
 from google.oauth2 import service_account
 from openai import OpenAI
+from langdetect import detect, DetectorFactory
+from langdetect.lang_detect_exception import LangDetectException
+import re
 
 load_dotenv()
 
@@ -18,23 +21,45 @@ client = OpenAI(
 
 service_account_file = 'data/hr-test-project-422816-8532d5dd2659.json'
 
+# Fixing random seed to make language detection deterministic
+DetectorFactory.seed = 0
+
 def translate_text_with_llm(text):
-    response = client.chat.completions.create(
-    model="gpt-3.5-turbo",
-    messages=[
-        {"role": "system", "content": "You are a helpful assistant."},
-        {"role": "user", "content": "Who won the world series in 2020?"},
-        {"role": "assistant", "content": "The Los Angeles Dodgers won the World Series in 2020."},
-        {"role": "user", "content": "Where was it played?"}
-    ]
+    print(text, "texttexttexttext")
+    prompt = f"""
+        # Context:
+        "We are the HR department of an IT company preparing a document with anonymous feedback for review. To maintain anonymity, all text in the document should be written in Ukrainian."
+
+        # Instruction:
+        "As a Multilingual Text Analyzer and Translator with over 15 years of experience in Russian, English, and Ukrainian languages, your task is to analyze the ‘Text to translate’ section and find all parts of the text written in Russian or English and translate them into Ukrainian. Return the entire text, preserving the document's hierarchy and structure, but with all Russian and English parts translated into Ukrainian. Do not translate or rephrase text that is already in Ukrainian.”
+
+        # Text to translate: "{text}"
+    """
+    completion = client.chat.completions.create(
+        model="gpt-4o-2024-05-13",
+        messages=[
+            {"role": "system", "content": "You are a helpful assistant."},
+            {"role": "user", "content": prompt},
+        ]
     )
 
+    print(completion.choices[0].message.content, "-------------------MESSAGE-------------------")
+    return completion.choices[0].message.content
+
 def contains_russian_or_english(text):
-    try:
-        language = detect(text)
-        return language in ["ru", "en"]
-    except:
-        return False
+    # Split the text into sentences
+    sentences = re.split(r'(?<=[.!?])\s+', text)
+    
+    for sentence in sentences:
+        if not sentence:
+            continue
+        try:
+            language = detect(sentence)
+            if language in ["ru", "en"]:
+                return True
+        except LangDetectException:
+            continue
+    return False
 
 def upload_file(channel_id, file_path):
     client = WebClient(token=os.environ.get("SLACK_BOT_TOKEN"))
@@ -235,6 +260,10 @@ def process_files(file_paths, is_anonymous=False):
         
         data += "\n"  # Add a newline after each section
     
+    if is_anonymous and contains_russian_or_english(data):
+        data = translate_text_with_llm(data)
+        print("The document contains Russian or English text.")
+
     create_google_doc(data, service_account_file, is_anonymous)
 
 def download_files(files, files_data):
