@@ -160,7 +160,7 @@ def parse_and_style(text):
 
     return requests
 
-def create_google_doc(processed_data, service_account_file, is_anonymous=False):
+def create_google_doc(processed_data, service_account_file, say, is_anonymous=False):
     # Load the service account credentials
     creds = service_account.Credentials.from_service_account_file(
         service_account_file, scopes=['https://www.googleapis.com/auth/drive']
@@ -189,11 +189,11 @@ def create_google_doc(processed_data, service_account_file, is_anonymous=False):
     print(requests, "=========requests============")
     result = docs_service.documents().batchUpdate(documentId=doc_id, body={'requests': requests}).execute()
 
-    # set_permissions(drive_service, doc_id, 'iwahtelt@gmail.com')
-
     print(f"Google Docs file created: {doc_title}")
     print(f"File ID: {doc_id}")
     print(f"File URL: https://docs.google.com/document/d/{doc_id}")
+
+    say(f"https://docs.google.com/document/d/{doc_id}")
 
 def set_permissions(service, file_id, user_email):
     permissions = {
@@ -207,7 +207,7 @@ def set_permissions(service, file_id, user_email):
         fields='id'
     ).execute()
 
-def process_files(file_paths, is_anonymous=False):
+def process_files(file_paths, say, is_anonymous=False):
     data = ""
     excluded_columns = ["Respondent number", "Timestamp", "Email Address", "Respondent signature"]
     processed_columns = set()
@@ -263,9 +263,9 @@ def process_files(file_paths, is_anonymous=False):
         data = translate_text_with_llm(data)
         print("The document contains Russian or English text.")
 
-    create_google_doc(data, service_account_file, is_anonymous)
+    create_google_doc(data, service_account_file, say, is_anonymous)
 
-def download_files(files, files_data):
+def download_files(files, say):
     file_paths = []
     download_dir = "./temp_downloads"
     os.makedirs(download_dir, exist_ok=True)
@@ -292,10 +292,10 @@ def download_files(files, files_data):
             logging.error(f"Failed to download file: {file_url}")
     
     # Process and send the non-anonymous version of the document
-    process_files(file_paths, is_anonymous=False)
+    process_files(file_paths, say, is_anonymous=False)
 
     # Process and send the anonymous version of the document
-    process_files(file_paths, is_anonymous=True)
+    process_files(file_paths, say, is_anonymous=True)
 
     # Delete the temporary downloaded files
     clear_directory('./temp_downloads')

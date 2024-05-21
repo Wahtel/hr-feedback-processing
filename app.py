@@ -13,17 +13,11 @@ logging.basicConfig(level=logging.INFO)
 slack_app = create_slack_app()
 
 @slack_app.event("message")
-def handle_message_events(body, ack, say, logger, client):
+def handle_message_events(body, ack, say):
   ack()
 
   if "files" in body["event"]:
     files = body["event"]["files"]
-
-    # print(files, "===============FILES===============")
-    channel_id = body["event"]["channel"]
-    files_data = {
-        "channel_id": channel_id,
-    }
-    download_files(files, files_data)
+    download_files(files, say)
 
 slack_app.start(port=int(os.environ.get("PORT", 3000))) 
