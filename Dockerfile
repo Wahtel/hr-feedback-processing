@@ -5,19 +5,13 @@ FROM --platform=linux/amd64 python:3.10-slim
 WORKDIR /app
 
 # Copy only necessary files for installing dependencies
-COPY pyproject.toml poetry.lock* /app/
+COPY Pipfile Pipfile.lock /app/
 
-# Install poetry in the container
-RUN pip install --no-cache-dir poetry
+# Install pipenv in the container
+RUN pip install --no-cache-dir pipenv
 
-# Configure Poetry:
-# - Do not create a virtual environment inside the container
-# - Do not ask any interactive question
-ENV POETRY_VIRTUALENVS_CREATE=false \
-    POETRY_NO_INTERACTION=1
-
-# Install project dependencies from the pyproject.toml file
-RUN poetry install --no-dev  # Omit dev dependencies
+# Install project dependencies from the Pipfile.lock
+RUN pipenv install --deploy --ignore-pipfile
 
 # Copy the rest of your application code
 COPY . /app
@@ -30,4 +24,4 @@ ENV SLACK_BOT_TOKEN=your-bot-token \
     SLACK_SIGNING_SECRET=your-signing-secret
 
 # Command to run the application
-CMD ["python", "app.py"]
+CMD ["pipenv", "run", "python", "app.py"]

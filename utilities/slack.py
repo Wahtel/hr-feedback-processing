@@ -36,14 +36,13 @@ def translate_text_with_llm(text):
         # Text to translate: "{text}"
     """
     completion = client.chat.completions.create(
-        model="gpt-4o-2024-05-13",
+        model="gpt-4o",
         messages=[
             {"role": "system", "content": "You are a helpful assistant."},
             {"role": "user", "content": prompt},
         ]
     )
 
-    print(completion.choices[0].message.content, "-------------------MESSAGE-------------------")
     return completion.choices[0].message.content
 
 def contains_russian_or_english(text):
